@@ -11,28 +11,32 @@
 
 using namespace std;
 
+//! Очередь для пула потоков.
 template<class T>
 class TSQueue {
 public:
 
+    //! Помещает задачу в очередь.
     void push(T task) {
         std::lock_guard<std::mutex> lk(mux);
         queue.push(task);
         cv.notify_one();
     };
 
-    T pop() {
+    //! Получает задачу из очереди, если есть возможность.
+    bool pop(T& t) {
         std::unique_lock<std::mutex> ul(mux);
         cv.wait(ul, [this]{ return aborted.load() || !queue.empty(); });
         if (aborted.load()) {
-            return nullptr;
+            return false;
         }
-        T task = queue.front();
+        t = queue.front();
         queue.pop();
         ul.unlock();
-        return task;
+        return true;
     };
 
+    //! Отключает очередь.
     void abort() {
         aborted.store(true);
         cv.notify_all();
@@ -46,6 +50,7 @@ private:
 };
 
 
+//! Объект пула потоков.
 template<class T>
 class ThreadPull {
 public:
@@ -57,29 +62,33 @@ public:
 
     ~ThreadPull() {
         for (auto& th : threads) {
-            th.detach();
+            th.join();
         }
         abort_flag.store(true);
     }
 
+    //! Метод, выполняющий задачу.
     void work() {
         while(!abort_flag.load()) {
             std::cout << "wait..." << std::endl;
-            T task = task_queue.pop();
-            if (task != nullptr) {
+            T task;
+            bool res = task_queue.pop(task);
+            if (res == true) {
                 std::cout << "execute..." << std::endl;
                 task();
             }
         }
     };
 
+    //! Помещает задачу в очередь.
     void submit(T fn) {
         task_queue.push(fn);
     };
 
+    //! Завершает работу пула потоков.
     void abort() {
-        task_queue.abort();
         abort_flag.store(true);
+        task_queue.abort();
     }
 
 private:
@@ -89,33 +98,33 @@ private:
 };
 
 
+//! Выполняемая структура задачи.
 struct task {
     task(int x, int delay):x(x),delay(delay){}
     int x;
     int delay;
 
     void operator()() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-    std::cout << "func executed in: " << std::this_thread::get_id() << " " << x << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        std::cout << "func executed in: " << std::this_thread::get_id() << " " << x << std::endl;
     }
 };
 
 int main()
 {
-    std::function<void()> fn1 = task(200, 200);
-    std::function<void()> fn2 = task(150, 150);
-    std::function<void()> fn3 = task(50, 50);
-    std::function<void()> fn4 = task(10, 10);
-
     ThreadPull<std::function<void()>> pool(4);
 
-    pool.submit(fn1);
-    pool.submit(fn2);
-    pool.submit(fn3);
-    pool.submit(fn4);
+    for (int i = 0; i < 10; ++i) {
+        std::function<void()> fn1 = task(1, 10);
+        std::function<void()> fn2 = task(2, 10);
+        pool.submit(fn1);
+        pool.submit(fn2);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
 
+    // Через 5 секунд посылаем сигнал на остановку пула потоков.
     std::this_thread::sleep_for(std::chrono::seconds(5));
-
+    std::cout << "sending abort signal" << std::endl;
     pool.abort();
 
     return 0;
